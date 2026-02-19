@@ -1,5 +1,7 @@
 """PIRATE CLI."""
 
+import multiprocessing
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +13,47 @@ from .config import AUDIO_EXTENSIONS, DB_PATH
 from .features import extract, file_hash
 from .similarity import find_similar, blend_seeds, playlist_walk
 from .store import Store
+
+
+# ---------------------------------------------------------------------------
+# Parallel scan worker (runs in subprocess — no DB access here)
+# ---------------------------------------------------------------------------
+
+def _scan_worker(args: tuple) -> dict:
+    """
+    Extract fingerprint + metadata for one file.
+    Runs in a worker process. Returns a plain dict so it's picklable.
+    """
+    path_str, has_mutagen = args
+    path = Path(path_str)
+    result = {
+        "path": path_str,
+        "fhash": None,
+        "title": None, "artist": None, "album": None, "duration_s": None,
+        "fp_vec": None, "bpm": None,
+        "error": None,
+    }
+    try:
+        result["fhash"] = file_hash(path)
+
+        if has_mutagen:
+            try:
+                import mutagen
+                meta = mutagen.File(path, easy=True)
+                if meta:
+                    result["title"]      = (meta.get("title")  or [None])[0]
+                    result["artist"]     = (meta.get("artist") or [None])[0]
+                    result["album"]      = (meta.get("album")  or [None])[0]
+                    result["duration_s"] = getattr(meta.info, "length", None)
+            except Exception:
+                pass
+
+        fp_vec, bpm = extract(path)
+        result["fp_vec"] = fp_vec
+        result["bpm"]    = bpm
+    except Exception as e:
+        result["error"] = str(e)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -82,10 +125,14 @@ def cli():
 @cli.command()
 @click.argument("directory", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.option("--update", is_flag=True, help="Only process new or changed files.")
-@click.option("--db", type=click.Path(path_type=Path), default=None, help="Database path (default: ~/.pirate/library.db).")
-def scan(directory: Path, update: bool, db: Path | None):
+@click.option("--workers", "-j", default=None, type=int,
+              help="Parallel workers (default: CPU count).")
+@click.option("--db", type=click.Path(path_type=Path), default=None,
+              help="Database path (default: ~/.pirate/library.db).")
+def scan(directory: Path, update: bool, workers: int | None, db: Path | None):
     """Scan DIRECTORY and build fingerprints for all audio files."""
     db_path = db or DB_PATH
+    n_workers = workers or os.cpu_count() or 4
 
     audio_files = [
         p for p in directory.rglob("*")
@@ -95,62 +142,60 @@ def scan(directory: Path, update: bool, db: Path | None):
 
     try:
         import mutagen
-        _has_mutagen = True
+        has_mutagen = True
     except ImportError:
-        _has_mutagen = False
+        has_mutagen = False
 
-    with Store(db_path) as store:
-        skipped = 0
-        errors = 0
-
-        for path in tqdm(audio_files, unit="track"):
-            path_str = str(path.resolve())
-            fhash = file_hash(path)
-
-            # Check if already up to date
-            if update:
+    # If --update, pre-filter files that are already current so workers
+    # don't waste time on them. Hash check is fast enough to do on the main thread.
+    if update:
+        with Store(db_path) as store:
+            filtered = []
+            skipped = 0
+            for path in audio_files:
+                path_str = str(path.resolve())
                 existing = store.get_song_by_path(path_str)
-                if existing and existing["file_hash"] == fhash:
-                    song_id = existing["id"]
-                    if not store.needs_fingerprint(song_id, fhash):
+                if existing:
+                    fhash = file_hash(path)
+                    if existing["file_hash"] == fhash and not store.needs_fingerprint(existing["id"], fhash):
                         skipped += 1
                         continue
+                filtered.append(path)
+            click.echo(f"Skipping {skipped} unchanged files, processing {len(filtered)}.")
+            audio_files = filtered
 
-            # Extract metadata
-            title = artist = album = None
-            duration_s = None
-            if _has_mutagen:
-                try:
-                    import mutagen
-                    meta = mutagen.File(path, easy=True)
-                    if meta:
-                        title = (meta.get("title") or [None])[0]
-                        artist = (meta.get("artist") or [None])[0]
-                        album = (meta.get("album") or [None])[0]
-                        duration_s = getattr(meta.info, "length", None)
-                except Exception:
-                    pass
+    if not audio_files:
+        click.echo("Nothing to do.")
+        return
 
-            # Extract fingerprint
-            try:
-                fp_vec, bpm = extract(path)
-            except Exception as e:
-                tqdm.write(f"ERROR {path.name}: {e}")
-                errors += 1
-                continue
+    click.echo(f"Processing with {n_workers} workers...")
 
-            song_id = store.upsert_song(
-                path=path_str,
-                file_hash=fhash,
-                title=title,
-                artist=artist,
-                album=album,
-                duration_s=duration_s,
-                bpm_est=bpm,
-            )
-            store.upsert_fingerprint(song_id, fp_vec)
+    skipped = 0
+    errors = 0
+    work_args = [(str(p.resolve()), has_mutagen) for p in audio_files]
 
-    click.echo(f"Done. Skipped {skipped}, errors {errors}.")
+    # Workers handle all CPU-bound work; main thread owns the DB connection.
+    with Store(db_path) as store:
+        with multiprocessing.Pool(processes=n_workers) as pool:
+            with tqdm(total=len(work_args), unit="track") as pbar:
+                for result in pool.imap_unordered(_scan_worker, work_args):
+                    pbar.update(1)
+                    if result["error"]:
+                        tqdm.write(f"ERROR {Path(result['path']).name}: {result['error']}")
+                        errors += 1
+                        continue
+                    song_id = store.upsert_song(
+                        path=result["path"],
+                        file_hash=result["fhash"],
+                        title=result["title"],
+                        artist=result["artist"],
+                        album=result["album"],
+                        duration_s=result["duration_s"],
+                        bpm_est=result["bpm"],
+                    )
+                    store.upsert_fingerprint(song_id, result["fp_vec"])
+
+    click.echo(f"Done. Errors: {errors}.")
 
 
 @cli.command()
