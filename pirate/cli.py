@@ -60,9 +60,10 @@ def _scan_worker(args: tuple) -> dict:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _load_library(store: Store) -> tuple[np.ndarray, list[int]]:
+def _load_library(store: Store, include_mixes: bool = False) -> tuple[np.ndarray, list[int]]:
     """Load all fingerprints into a matrix. Returns (matrix, song_ids)."""
-    pairs = list(store.all_fingerprints())
+    max_dur = None if include_mixes else 1200.0
+    pairs = list(store.all_fingerprints(max_duration_s=max_dur))
     if not pairs:
         return np.empty((0,), dtype=np.float32), []
     ids, vecs = zip(*pairs)
@@ -201,8 +202,10 @@ def scan(directory: Path, update: bool, workers: int | None, db: Path | None):
 @cli.command()
 @click.argument("target")
 @click.option("-k", "--count", default=10, show_default=True, help="Number of results.")
+@click.option("--mixes", is_flag=True, default=False,
+              help="Include DJ mixes and long tracks (>20 min) in results.")
 @click.option("--db", type=click.Path(path_type=Path), default=None)
-def similar(target: str, count: int, db: Path | None):
+def similar(target: str, count: int, mixes: bool, db: Path | None):
     """Find songs similar to TARGET (file path or search string)."""
     db_path = db or DB_PATH
     with Store(db_path) as store:
@@ -212,14 +215,24 @@ def similar(target: str, count: int, db: Path | None):
             click.echo("No fingerprint for this song. Run `pirate scan` first.", err=True)
             sys.exit(1)
 
-        library, ids = _load_library(store)
+        library, ids = _load_library(store, include_mixes=mixes)
         if len(ids) == 0:
             click.echo("Library is empty. Run `pirate scan` first.", err=True)
             sys.exit(1)
 
-        results = find_similar(fp, library, ids, k=count, exclude_ids={row["id"]})
+        # Also exclude all songs sharing the same file hash as the query
+        # (deduplicates results when the same track lives in multiple folders)
+        query_hash = row["file_hash"]
+        same_hash_ids = {
+            r["id"] for r in store._conn.execute(
+                "SELECT id FROM songs WHERE file_hash = ?", (query_hash,)
+            ).fetchall()
+        }
+        results, near_dupes = find_similar(fp, library, ids, k=count, exclude_ids=same_hash_ids)
 
         click.echo(f"\nSimilar to: {_format_song(row)}\n")
+        if near_dupes:
+            click.echo(f"  (near-duplicates in library: {', '.join(_format_song(store.get_song_by_id(sid)) for sid, _ in near_dupes)})\n")
         for rank, (song_id, score) in enumerate(results, 1):
             r = store.get_song_by_id(song_id)
             click.echo(f"  {rank:2d}. [{score:.3f}]  {_format_song(r)}")
@@ -248,8 +261,13 @@ def identify(clip: Path, count: int, db: Path | None):
             click.echo("Library is empty. Run `pirate scan` first.", err=True)
             sys.exit(1)
 
-        results = find_similar(fp, library, ids, k=count)
+        results, near_dupes = find_similar(fp, library, ids, k=count)
         click.echo(f"\nTop {count} matches:\n")
+        if near_dupes:
+            for song_id, score in near_dupes:
+                r = store.get_song_by_id(song_id)
+                click.echo(f"  !! [{score:.3f} near-dupe]  {_format_song(r)}")
+            click.echo()
         for rank, (song_id, score) in enumerate(results, 1):
             r = store.get_song_by_id(song_id)
             confidence = "high" if score > 0.85 else "medium" if score > 0.65 else "low"

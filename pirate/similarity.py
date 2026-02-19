@@ -44,13 +44,35 @@ def find_similar(
     library_ids: list[int],
     k: int = 10,
     exclude_ids: set[int] | None = None,
-) -> list[tuple[int, float]]:
+    near_dupe_threshold: float = 0.97,
+) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
     """
     Find the k most similar songs to a query fingerprint.
-    Returns list of (song_id, similarity_score) sorted descending.
+
+    Returns (results, near_dupes):
+    - results:     list of (song_id, score) sorted descending, excluding near-dupes
+    - near_dupes:  list of (song_id, score) with score >= near_dupe_threshold
+                   (same track, different rip/encode — not counted against k)
     """
     scores = cosine_similarity_matrix(query_vec, library_vecs)
-    return top_k(scores, library_ids, k, exclude_ids)
+    exclude = exclude_ids or set()
+
+    near_dupes = []
+    filtered_exclude = set(exclude)
+    indexed = [(library_ids[i], float(scores[i])) for i in range(len(scores))
+               if library_ids[i] not in exclude]
+    indexed.sort(key=lambda x: x[1], reverse=True)
+
+    results = []
+    for song_id, score in indexed:
+        if score >= near_dupe_threshold:
+            near_dupes.append((song_id, score))
+        else:
+            results.append((song_id, score))
+            if len(results) >= k:
+                break
+
+    return results, near_dupes
 
 
 def blend_seeds(vecs: list[np.ndarray]) -> np.ndarray:
@@ -127,7 +149,7 @@ def playlist_walk(
     current_vec = blend_seeds([library_vecs[i] for i in seed_indices])
 
     while total_s < target_duration_s:
-        candidates = find_similar(current_vec, library_vecs, library_ids, k=step_k, exclude_ids=exclude)
+        candidates, _ = find_similar(current_vec, library_vecs, library_ids, k=step_k, exclude_ids=exclude)
         if not candidates:
             break
         next_id, _ = candidates[0]

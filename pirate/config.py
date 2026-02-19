@@ -26,7 +26,7 @@ FINGERPRINT_DIM = N_MELS * N_MOD_BINS   # 8192 full, or PCA_DIM post-PCA
 PCA_DIM = 256
 
 # Pipeline version — increment when the extraction logic changes
-PIPELINE_VERSION = 1
+PIPELINE_VERSION = 2
 
 # Audio formats supported via ffmpeg
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".m4a", ".ogg", ".opus", ".aac", ".wma"}

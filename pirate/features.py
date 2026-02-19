@@ -130,50 +130,49 @@ def modulation_spectrum(log_mel: np.ndarray) -> np.ndarray:
     """
     Compute the modulation spectrum from a log-mel spectrogram.
 
-    For each mel band:
-      - Apply Hann window along the time axis
-      - FFT along time axis
-      - Take magnitude (phase invariance → position invariance)
-      - Keep positive modulation frequencies
+    For songs longer than MOD_FFT_FRAMES, computes multiple overlapping windows
+    and averages their magnitude spectra. This gives a stable, position-invariant
+    fingerprint that represents the full song rather than just the first 47 seconds.
 
-    Then resample the modulation axis to N_MOD_BINS log-spaced bins.
+    For clips shorter than MOD_FFT_FRAMES, zero-pads to maintain fixed output size.
 
     Returns [N_MELS × N_MOD_BINS] float32 array.
     """
     n_mels, n_frames = log_mel.shape
 
-    # Zero-pad or truncate to MOD_FFT_FRAMES
-    if n_frames < MOD_FFT_FRAMES:
-        padded = np.zeros((n_mels, MOD_FFT_FRAMES), dtype=np.float32)
-        padded[:, :n_frames] = log_mel
-    else:
-        padded = log_mel[:, :MOD_FFT_FRAMES].copy()
-
-    # Hann window along time axis
-    hann = np.hanning(MOD_FFT_FRAMES).astype(np.float32)
-    padded *= hann[np.newaxis, :]
-
-    # FFT along time axis, take magnitude
-    mod_fft = np.fft.rfft(padded, n=MOD_FFT_FRAMES, axis=1)   # [N_MELS × M]
-    mod_mag = np.abs(mod_fft).astype(np.float32)               # [N_MELS × M]
-
-    # Modulation frequency axis (linear, positive only)
     frame_rate = SAMPLE_RATE / HOP_LENGTH                      # ~43.07 Hz
     n_mod_linear = MOD_FFT_FRAMES // 2 + 1
     mod_freqs_linear = np.linspace(0, frame_rate / 2, n_mod_linear)
-
-    # Only keep up to MOD_FREQ_MAX
     cutoff_idx = np.searchsorted(mod_freqs_linear, MOD_FREQ_MAX)
-    mod_mag = mod_mag[:, :cutoff_idx]
     mod_freqs_linear = mod_freqs_linear[:cutoff_idx]
-
-    # Resample to log-spaced bins via interpolation
     log_bins = np.geomspace(MOD_FREQ_MIN, MOD_FREQ_MAX, N_MOD_BINS)
-    resampled = np.zeros((n_mels, N_MOD_BINS), dtype=np.float32)
-    for i in range(n_mels):
-        resampled[i] = np.interp(log_bins, mod_freqs_linear, mod_mag[i])
+    hann = np.hanning(MOD_FFT_FRAMES).astype(np.float32)
 
-    return resampled
+    def _window_mod(frames_2d: np.ndarray) -> np.ndarray:
+        """Compute modulation magnitude for one MOD_FFT_FRAMES-wide window."""
+        windowed = frames_2d * hann[np.newaxis, :]
+        fft = np.fft.rfft(windowed, n=MOD_FFT_FRAMES, axis=1)
+        mag = np.abs(fft).astype(np.float32)[:, :cutoff_idx]
+        out = np.zeros((n_mels, N_MOD_BINS), dtype=np.float32)
+        for i in range(n_mels):
+            out[i] = np.interp(log_bins, mod_freqs_linear, mag[i])
+        return out
+
+    if n_frames < MOD_FFT_FRAMES:
+        # Short clip: zero-pad to MOD_FFT_FRAMES
+        padded = np.zeros((n_mels, MOD_FFT_FRAMES), dtype=np.float32)
+        padded[:, :n_frames] = log_mel
+        return _window_mod(padded)
+
+    # Long song: average over 50%-overlapping windows to cover the full track
+    hop = MOD_FFT_FRAMES // 2
+    windows = []
+    for start in range(0, n_frames - MOD_FFT_FRAMES + 1, hop):
+        windows.append(_window_mod(log_mel[:, start:start + MOD_FFT_FRAMES]))
+    # Always include a window anchored at the end of the track
+    windows.append(_window_mod(log_mel[:, n_frames - MOD_FFT_FRAMES:]))
+
+    return np.mean(windows, axis=0).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------

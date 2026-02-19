@@ -113,11 +113,21 @@ class Store:
         return self._conn.execute("SELECT * FROM songs ORDER BY artist, album, title").fetchall()
 
     def search_songs(self, query: str) -> list[sqlite3.Row]:
+        """Search songs by metadata. Returns one row per unique file hash."""
         q = f"%{query}%"
-        return self._conn.execute(
-            "SELECT * FROM songs WHERE title LIKE ? OR artist LIKE ? OR album LIKE ? OR path LIKE ?",
+        # MIN(id) picks the lowest-id representative for each unique hash,
+        # which is typically the best-tagged copy.
+        rows = self._conn.execute(
+            """
+            SELECT * FROM songs WHERE id IN (
+                SELECT MIN(id) FROM songs
+                WHERE title LIKE ? OR artist LIKE ? OR album LIKE ? OR path LIKE ?
+                GROUP BY file_hash
+            )
+            """,
             (q, q, q, q),
         ).fetchall()
+        return rows
 
     # ------------------------------------------------------------------
     # Fingerprints
@@ -140,10 +150,40 @@ class Store:
         ).fetchone()
         return _unpack(row["vector"]) if row else None
 
-    def all_fingerprints(self) -> Iterator[tuple[int, np.ndarray]]:
-        """Yield (song_id, vector) for all songs with current-version fingerprints."""
+    def all_fingerprints(
+        self,
+        min_duration_s: float = 60.0,
+        max_duration_s: float | None = 1200.0,
+    ) -> Iterator[tuple[int, np.ndarray]]:
+        """
+        Yield (song_id, vector) for searchable songs:
+        - One representative per unique file hash (deduplicates multi-copy libraries)
+        - Skips tracks with unknown duration (mutagen couldn't read them — likely non-music)
+        - Skips tracks shorter than min_duration_s (fingerprints unreliable due to zero-padding)
+        - Skips tracks longer than max_duration_s (DJ mixes have averaged-out fingerprints
+          that match everything; pass None to include them)
+        """
+        max_clause = "AND s.duration_s <= ?" if max_duration_s is not None else ""
+        params = [PIPELINE_VERSION, min_duration_s]
+        if max_duration_s is not None:
+            params.append(max_duration_s)
+        params.append(PIPELINE_VERSION)
+
         rows = self._conn.execute(
-            "SELECT song_id, vector FROM fingerprints WHERE version = ?", (PIPELINE_VERSION,)
+            f"""
+            SELECT f.song_id, f.vector FROM fingerprints f
+            JOIN songs s ON s.id = f.song_id
+            WHERE f.version = ?
+              AND s.duration_s IS NOT NULL
+              AND s.duration_s >= ?
+              {max_clause}
+              AND f.song_id IN (
+                  SELECT MIN(id) FROM songs
+                  WHERE id IN (SELECT song_id FROM fingerprints WHERE version = ?)
+                  GROUP BY file_hash
+              )
+            """,
+            params,
         ).fetchall()
         for row in rows:
             yield row["song_id"], _unpack(row["vector"])
