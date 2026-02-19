@@ -201,13 +201,13 @@ def estimate_bpm(mod_spec: np.ndarray) -> float | None:
     """
     Estimate BPM from the modulation spectrum.
     Uses the dominant modulation frequency in low mel bands (roughly < 500 Hz).
+    Checks for half-time ambiguity: if 2× the detected peak also has strong energy,
+    prefer the doubled value (handles dubstep/half-time genres).
     Returns BPM or None if no clear peak.
     """
-    # Low bands: roughly the first quarter of mel bands
     n_low = N_MELS // 4
     low_energy = mod_spec[:n_low].mean(axis=0)   # [N_MOD_BINS]
 
-    frame_rate = SAMPLE_RATE / HOP_LENGTH
     log_bins = np.geomspace(MOD_FREQ_MIN, MOD_FREQ_MAX, N_MOD_BINS)
 
     # Only look in the BPM-plausible range: 0.5–4 Hz = 30–240 BPM
@@ -220,13 +220,22 @@ def estimate_bpm(mod_spec: np.ndarray) -> float | None:
 
     peak_idx = candidate_energy.argmax()
     peak_energy = candidate_energy[peak_idx]
+    peak_freq = candidate_freqs[peak_idx]
 
     # Require peak to be meaningfully above noise
     if peak_energy < candidate_energy.mean() * 1.5:
         return None
 
-    bpm = candidate_freqs[peak_idx] * 60.0
-    return round(bpm, 1)
+    # Half-time check: if 2× the peak frequency is within the valid range and
+    # has at least 60% of the peak's energy, the detected peak is likely the
+    # half-time sub-bass and the real tempo is double.
+    double_freq = peak_freq * 2.0
+    if double_freq <= 4.0:
+        double_energy = float(np.interp(double_freq, log_bins, low_energy))
+        if double_energy >= peak_energy * 0.6:
+            peak_freq = double_freq
+
+    return round(peak_freq * 60.0, 1)
 
 
 # ---------------------------------------------------------------------------

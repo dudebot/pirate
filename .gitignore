@@ -10,8 +10,7 @@ build/
 venv/
 env/
 
-# pirate data
-~/.pirate/
+# pirate data (lives in ~/.pirate/, outside the repo)
 
 # test audio scratch files
 *.wav
