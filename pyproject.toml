@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pirate"
+version = "0.1.0"
+description = "Perceptual Invariant Rhythmic Audio Taxonomy Engine"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "librosa",
+    "scikit-learn",
+    "click",
+    "tqdm",
+    "mutagen",
+]
+
+[project.optional-dependencies]
+auto-cluster = ["hdbscan"]
+
+[project.scripts]
+pirate = "pirate.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pirate"]

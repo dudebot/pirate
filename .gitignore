@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# pirate data
+~/.pirate/
+
+# test audio scratch files
+*.wav
+*.mp3
+*.flac
+scratch/
+
+# IDE
+.vscode/
+.idea/
+*.swp
