@@ -233,11 +233,9 @@ def similar(target: str, count: int, mixes: bool, db: Path | None):
                 "SELECT id FROM songs WHERE file_hash = ?", (query_hash,)
             ).fetchall()
         }
-        results, near_dupes = find_similar(fp, library, ids, k=count, exclude_ids=same_hash_ids)
+        results = find_similar(fp, library, ids, k=count, exclude_ids=same_hash_ids)
 
         click.echo(f"\nSimilar to: {_format_song(row)}\n")
-        if near_dupes:
-            click.echo(f"  (near-duplicates in library: {', '.join(_format_song(store.get_song_by_id(sid)) for sid, _ in near_dupes)})\n")
         for rank, (song_id, score) in enumerate(results, 1):
             r = store.get_song_by_id(song_id)
             click.echo(f"  {rank:2d}. [{score:.3f}]  {_format_song(r)}")
@@ -266,13 +264,8 @@ def identify(clip: Path, count: int, db: Path | None):
             click.echo("Library is empty. Run `pirate scan` first.", err=True)
             sys.exit(1)
 
-        results, near_dupes = find_similar(fp, library, ids, k=count)
+        results = find_similar(fp, library, ids, k=count)
         click.echo(f"\nTop {count} matches:\n")
-        if near_dupes:
-            for song_id, score in near_dupes:
-                r = store.get_song_by_id(song_id)
-                click.echo(f"  !! [{score:.3f} near-dupe]  {_format_song(r)}")
-            click.echo()
         for rank, (song_id, score) in enumerate(results, 1):
             r = store.get_song_by_id(song_id)
             confidence = "high" if score > 0.85 else "medium" if score > 0.65 else "low"

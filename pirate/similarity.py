@@ -44,35 +44,23 @@ def find_similar(
     library_ids: list[int],
     k: int = 10,
     exclude_ids: set[int] | None = None,
-    near_dupe_threshold: float = 0.97,
-) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+) -> list[tuple[int, float]]:
     """
     Find the k most similar songs to a query fingerprint.
 
-    Returns (results, near_dupes):
-    - results:     list of (song_id, score) sorted descending, excluding near-dupes
-    - near_dupes:  list of (song_id, score) with score >= near_dupe_threshold
-                   (same track, different rip/encode — not counted against k)
+    Returns a list of (song_id, score) sorted descending.
+
+    Note: same-file deduplication is handled upstream via file_hash exclusion,
+    not by score threshold. Score-based near-dupe inference is unreliable because
+    long tracks with multi-window averaging produce "averaged" fingerprints that
+    score 0.97+ against many unrelated songs.
     """
     scores = cosine_similarity_matrix(query_vec, library_vecs)
     exclude = exclude_ids or set()
-
-    near_dupes = []
-    filtered_exclude = set(exclude)
     indexed = [(library_ids[i], float(scores[i])) for i in range(len(scores))
                if library_ids[i] not in exclude]
     indexed.sort(key=lambda x: x[1], reverse=True)
-
-    results = []
-    for song_id, score in indexed:
-        if score >= near_dupe_threshold:
-            near_dupes.append((song_id, score))
-        else:
-            results.append((song_id, score))
-            if len(results) >= k:
-                break
-
-    return results, near_dupes
+    return indexed[:k]
 
 
 def blend_seeds(vecs: list[np.ndarray]) -> np.ndarray:
@@ -149,7 +137,7 @@ def playlist_walk(
     current_vec = blend_seeds([library_vecs[i] for i in seed_indices])
 
     while total_s < target_duration_s:
-        candidates, _ = find_similar(current_vec, library_vecs, library_ids, k=step_k, exclude_ids=exclude)
+        candidates = find_similar(current_vec, library_vecs, library_ids, k=step_k, exclude_ids=exclude)
         if not candidates:
             break
         next_id, _ = candidates[0]

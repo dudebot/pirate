@@ -195,7 +195,7 @@ async def similar_songs(song_id: int, k: int = Query(default=12)):
         ).fetchall()
         exclude_ids = {r["id"] for r in same}
 
-    results, near_dupes = find_similar(
+    results = find_similar(
         fp, state.library_vecs, state.library_ids, k=k, exclude_ids=exclude_ids
     )
 
@@ -209,7 +209,7 @@ async def similar_songs(song_id: int, k: int = Query(default=12)):
                 out.append(d)
         return out
 
-    return {"results": _enrich(results), "near_dupes": _enrich(near_dupes)}
+    return {"results": _enrich(results)}
 
 
 @app.get("/api/stats")

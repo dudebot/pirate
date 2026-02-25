@@ -188,7 +188,6 @@ html, body {
 .similar-meta   { font-size: 11px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; }
 .score-bar-wrap { flex: 1; height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
 .score-bar      { height: 100%; background: var(--accent); border-radius: 2px; }
-.near-dupe-tag  { font-size: 10px; font-weight: 600; color: var(--success); }
 
 /* ── Player bar ─────────────────────────────────────────────────────────────── */
 

@@ -137,13 +137,8 @@ async function selectSong(id) {
   }
 }
 
-function renderSimilar({ results = [], near_dupes = [] }) {
-  const all = [
-    ...near_dupes.map(s => ({ ...s, _dupe: true })),
-    ...results,
-  ];
-
-  if (!all.length) {
+function renderSimilar({ results = [] }) {
+  if (!results.length) {
     $('similar-list').innerHTML = '<div class="empty">No similar songs found.</div>';
     return;
   }
@@ -151,12 +146,9 @@ function renderSimilar({ results = [], near_dupes = [] }) {
   // Score bar: map 0.8–1.0 → 0–100%
   const pct = score => Math.max(0, Math.min(100, (score - 0.8) / 0.2 * 100)).toFixed(1);
 
-  $('similar-list').innerHTML = all.map(s => `
+  $('similar-list').innerHTML = results.map(s => `
     <div class="similar-item" data-id="${s.id}">
-      <div class="similar-artist">
-        ${esc(s.artist)}
-        ${s._dupe ? '<span class="near-dupe-tag">near-dupe</span>' : ''}
-      </div>
+      <div class="similar-artist">${esc(s.artist)}</div>
       <div class="similar-title">${esc(s.title)}</div>
       <div class="similar-meta">
         <span>${fmtDur(s.duration_s)}</span>
