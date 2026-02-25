@@ -157,6 +157,11 @@ def scan(directory: Path, update: bool, workers: int | None, db: Path | None):
                 path_str = str(path.resolve())
                 existing = store.get_song_by_path(path_str)
                 if existing:
+                    # Skip files too long to appear in search results — no point recomputing
+                    # (matches the max_duration_s=1200.0 default in all_fingerprints)
+                    if existing["duration_s"] and existing["duration_s"] > 1200.0:
+                        skipped += 1
+                        continue
                     fhash = file_hash(path)
                     if existing["file_hash"] == fhash and not store.needs_fingerprint(existing["id"], fhash):
                         skipped += 1
