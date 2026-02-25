@@ -63,6 +63,63 @@ def find_similar(
     return indexed[:k]
 
 
+def chunk_similarity(chunks_a: list[np.ndarray], chunks_b: list[np.ndarray]) -> float:
+    """
+    Bidirectional median similarity between two sets of chunk fingerprints.
+
+    For each chunk in A, finds its best match in B (forward coverage).
+    For each chunk in B, finds its best match in A (backward coverage).
+    Returns min(median_forward, median_backward) — both songs must mutually
+    recognize each other, preventing a single lucky pair from dominating.
+    """
+    if not chunks_a or not chunks_b:
+        return 0.0
+    mat_a = np.stack(chunks_a)  # [M × D]
+    mat_b = np.stack(chunks_b)  # [N × D]
+
+    # Normalize
+    mat_a = mat_a / (np.linalg.norm(mat_a, axis=1, keepdims=True) + 1e-10)
+    mat_b = mat_b / (np.linalg.norm(mat_b, axis=1, keepdims=True) + 1e-10)
+
+    # Full M×N similarity matrix in one matmul
+    sim = mat_a @ mat_b.T  # [M × N]
+
+    forward  = float(np.median(sim.max(axis=1)))  # best B match per A chunk
+    backward = float(np.median(sim.max(axis=0)))  # best A match per B chunk
+    return min(forward, backward)
+
+
+def rerank_with_chunks(
+    candidates: list[tuple[int, float]],
+    query_chunks: list[np.ndarray],
+    store,
+    k: int = 10,
+) -> list[tuple[int, float]]:
+    """
+    Re-rank a candidate list using chunk-based bidirectional median similarity.
+
+    candidates: initial (song_id, score) list from find_similar() first pass
+    query_chunks: chunk fingerprints extracted from the query song/clip
+    store: open Store instance for DB access
+    Returns top-k (song_id, chunk_score) pairs.
+    """
+    candidate_ids = [sid for sid, _ in candidates]
+    chunks_bulk = store.get_chunks_bulk(candidate_ids)
+
+    scored = []
+    for song_id, fast_score in candidates:
+        lib_chunks = chunks_bulk.get(song_id)
+        if lib_chunks:
+            score = chunk_similarity(query_chunks, lib_chunks)
+        else:
+            # No chunks stored yet — fall back to the averaged fingerprint score
+            score = fast_score * 0.85  # discount to deprioritize vs chunk-ranked songs
+        scored.append((song_id, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[:k]
+
+
 def blend_seeds(vecs: list[np.ndarray]) -> np.ndarray:
     """
     Blend multiple seed fingerprints into a single query vector by averaging.

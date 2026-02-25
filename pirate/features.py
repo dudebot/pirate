@@ -126,21 +126,15 @@ def mel_spectrogram(audio: np.ndarray) -> np.ndarray:
 # Step 3 & 4: Modulation spectrum with log-frequency axis
 # ---------------------------------------------------------------------------
 
-def modulation_spectrum(log_mel: np.ndarray) -> np.ndarray:
+def _compute_windows(log_mel: np.ndarray) -> list[np.ndarray]:
     """
-    Compute the modulation spectrum from a log-mel spectrogram.
-
-    For songs longer than MOD_FFT_FRAMES, computes multiple overlapping windows
-    and averages their magnitude spectra. This gives a stable, position-invariant
-    fingerprint that represents the full song rather than just the first 47 seconds.
-
-    For clips shorter than MOD_FFT_FRAMES, zero-pads to maintain fixed output size.
-
-    Returns [N_MELS × N_MOD_BINS] float32 array.
+    Compute modulation spectrum for every 50%-overlapping window of log_mel.
+    Returns a list of [N_MELS × N_MOD_BINS] float32 arrays.
+    Short clips are zero-padded to produce exactly one window.
     """
     n_mels, n_frames = log_mel.shape
 
-    frame_rate = SAMPLE_RATE / HOP_LENGTH                      # ~43.07 Hz
+    frame_rate = SAMPLE_RATE / HOP_LENGTH
     n_mod_linear = MOD_FFT_FRAMES // 2 + 1
     mod_freqs_linear = np.linspace(0, frame_rate / 2, n_mod_linear)
     cutoff_idx = np.searchsorted(mod_freqs_linear, MOD_FREQ_MAX)
@@ -149,7 +143,6 @@ def modulation_spectrum(log_mel: np.ndarray) -> np.ndarray:
     hann = np.hanning(MOD_FFT_FRAMES).astype(np.float32)
 
     def _window_mod(frames_2d: np.ndarray) -> np.ndarray:
-        """Compute modulation magnitude for one MOD_FFT_FRAMES-wide window."""
         windowed = frames_2d * hann[np.newaxis, :]
         fft = np.fft.rfft(windowed, n=MOD_FFT_FRAMES, axis=1)
         mag = np.abs(fft).astype(np.float32)[:, :cutoff_idx]
@@ -159,20 +152,24 @@ def modulation_spectrum(log_mel: np.ndarray) -> np.ndarray:
         return out
 
     if n_frames < MOD_FFT_FRAMES:
-        # Short clip: zero-pad to MOD_FFT_FRAMES
         padded = np.zeros((n_mels, MOD_FFT_FRAMES), dtype=np.float32)
         padded[:, :n_frames] = log_mel
-        return _window_mod(padded)
+        return [_window_mod(padded)]
 
-    # Long song: average over 50%-overlapping windows to cover the full track
     hop = MOD_FFT_FRAMES // 2
     windows = []
     for start in range(0, n_frames - MOD_FFT_FRAMES + 1, hop):
         windows.append(_window_mod(log_mel[:, start:start + MOD_FFT_FRAMES]))
-    # Always include a window anchored at the end of the track
     windows.append(_window_mod(log_mel[:, n_frames - MOD_FFT_FRAMES:]))
+    return windows
 
-    return np.mean(windows, axis=0).astype(np.float32)
+
+def modulation_spectrum(log_mel: np.ndarray) -> np.ndarray:
+    """
+    Compute the averaged modulation spectrum from a log-mel spectrogram.
+    Used for the fast first-pass fingerprint. Returns [N_MELS × N_MOD_BINS].
+    """
+    return np.mean(_compute_windows(log_mel), axis=0).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -241,16 +238,44 @@ def estimate_bpm(mod_spec: np.ndarray) -> float | None:
 # Convenience: full pipeline for one file
 # ---------------------------------------------------------------------------
 
-def extract(path: str | Path) -> tuple[np.ndarray, float | None]:
+def extract_full(
+    path: str | Path,
+    max_chunks: int = 8,
+) -> tuple[np.ndarray, float | None, list[np.ndarray]]:
     """
-    Full pipeline: file → (fingerprint_vector, bpm_estimate).
-    bpm_estimate may be None if the track doesn't have a clear beat.
+    Full pipeline in a single decode pass.
+    Returns (fingerprint_vector, bpm_estimate, chunk_fingerprints).
+
+    chunk_fingerprints is a list of up to max_chunks fingerprint vectors,
+    one per evenly-sampled window. These preserve section-level detail that
+    the averaged fingerprint_vector discards.
     """
     audio = decode_audio(path)
     mel = mel_spectrogram(audio)
-    mod = modulation_spectrum(mel)
+    windows = _compute_windows(mel)
+
+    # Averaged fingerprint (fast first-pass similarity)
+    mod = np.mean(windows, axis=0).astype(np.float32)
     fp = fingerprint(mod)
     bpm = estimate_bpm(mod)
+
+    # Evenly-sampled chunk fingerprints (second-pass reranking)
+    if len(windows) <= max_chunks:
+        selected = windows
+    else:
+        indices = np.linspace(0, len(windows) - 1, max_chunks, dtype=int)
+        selected = [windows[i] for i in indices]
+    chunks = [fingerprint(w) for w in selected]
+
+    return fp, bpm, chunks
+
+
+def extract(path: str | Path) -> tuple[np.ndarray, float | None]:
+    """
+    Full pipeline: file → (fingerprint_vector, bpm_estimate).
+    For scanning, prefer extract_full() to also get chunk fingerprints.
+    """
+    fp, bpm, _ = extract_full(path)
     return fp, bpm
 
 

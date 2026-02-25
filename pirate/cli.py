@@ -10,8 +10,8 @@ import numpy as np
 from tqdm import tqdm
 
 from .config import AUDIO_EXTENSIONS, DB_PATH
-from .features import extract, file_hash
-from .similarity import find_similar, blend_seeds, playlist_walk
+from .features import extract_full, file_hash
+from .similarity import find_similar, rerank_with_chunks, blend_seeds, playlist_walk
 from .store import Store
 
 
@@ -30,7 +30,7 @@ def _scan_worker(args: tuple) -> dict:
         "path": path_str,
         "fhash": None,
         "title": None, "artist": None, "album": None, "duration_s": None,
-        "fp_vec": None, "bpm": None,
+        "fp_vec": None, "bpm": None, "chunks": None,
         "error": None,
     }
     try:
@@ -48,9 +48,10 @@ def _scan_worker(args: tuple) -> dict:
             except Exception:
                 pass
 
-        fp_vec, bpm = extract(path)
+        fp_vec, bpm, chunks = extract_full(path)
         result["fp_vec"] = fp_vec
         result["bpm"]    = bpm
+        result["chunks"] = chunks
     except Exception as e:
         result["error"] = str(e)
     return result
@@ -163,7 +164,9 @@ def scan(directory: Path, update: bool, workers: int | None, db: Path | None):
                         skipped += 1
                         continue
                     fhash = file_hash(path)
-                    if existing["file_hash"] == fhash and not store.needs_fingerprint(existing["id"], fhash):
+                    if (existing["file_hash"] == fhash
+                            and not store.needs_fingerprint(existing["id"], fhash)
+                            and not store.needs_chunks(existing["id"])):
                         skipped += 1
                         continue
                 filtered.append(path)
@@ -200,6 +203,8 @@ def scan(directory: Path, update: bool, workers: int | None, db: Path | None):
                         bpm_est=result["bpm"],
                     )
                     store.upsert_fingerprint(song_id, result["fp_vec"])
+                    if result["chunks"]:
+                        store.upsert_chunks(song_id, result["chunks"])
 
     click.echo(f"Done. Errors: {errors}.")
 
@@ -233,7 +238,12 @@ def similar(target: str, count: int, mixes: bool, db: Path | None):
                 "SELECT id FROM songs WHERE file_hash = ?", (query_hash,)
             ).fetchall()
         }
-        results = find_similar(fp, library, ids, k=count, exclude_ids=same_hash_ids)
+        candidates = find_similar(fp, library, ids, k=max(count * 10, 100), exclude_ids=same_hash_ids)
+        query_chunks = store.get_chunks(row["id"])
+        if query_chunks:
+            results = rerank_with_chunks(candidates, query_chunks, store, k=count)
+        else:
+            results = candidates[:count]
 
         click.echo(f"\nSimilar to: {_format_song(row)}\n")
         for rank, (song_id, score) in enumerate(results, 1):
@@ -250,7 +260,7 @@ def identify(clip: Path, count: int, db: Path | None):
     db_path = db or DB_PATH
     click.echo(f"Extracting fingerprint from {clip.name}...")
     try:
-        fp, bpm = extract(clip)
+        fp, bpm, clip_chunks = extract_full(clip)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -264,7 +274,8 @@ def identify(clip: Path, count: int, db: Path | None):
             click.echo("Library is empty. Run `pirate scan` first.", err=True)
             sys.exit(1)
 
-        results = find_similar(fp, library, ids, k=count)
+        candidates = find_similar(fp, library, ids, k=max(count * 10, 100))
+        results = rerank_with_chunks(candidates, clip_chunks, store, k=count)
         click.echo(f"\nTop {count} matches:\n")
         for rank, (song_id, score) in enumerate(results, 1):
             r = store.get_song_by_id(song_id)

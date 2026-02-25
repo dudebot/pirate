@@ -29,6 +29,14 @@ CREATE TABLE IF NOT EXISTS fingerprints (
     version     INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS chunks (
+    song_id     INTEGER REFERENCES songs(id),
+    chunk_idx   INTEGER NOT NULL,
+    vector      BLOB NOT NULL,
+    version     INTEGER NOT NULL,
+    PRIMARY KEY (song_id, chunk_idx)
+);
+
 CREATE TABLE IF NOT EXISTS clusters (
     song_id     INTEGER REFERENCES songs(id),
     cluster_id  INTEGER NOT NULL,
@@ -194,6 +202,54 @@ class Store:
             "SELECT version FROM fingerprints WHERE song_id = ?", (song_id,)
         ).fetchone()
         return row is None or row["version"] != PIPELINE_VERSION
+
+    # ------------------------------------------------------------------
+    # Chunks
+    # ------------------------------------------------------------------
+
+    def upsert_chunks(self, song_id: int, vectors: list):
+        """Store per-section chunk fingerprints for a song."""
+        self._conn.execute(
+            "DELETE FROM chunks WHERE song_id = ? AND version = ?",
+            (song_id, PIPELINE_VERSION),
+        )
+        for idx, vec in enumerate(vectors):
+            self._conn.execute(
+                "INSERT INTO chunks (song_id, chunk_idx, vector, version) VALUES (?, ?, ?, ?)",
+                (song_id, idx, _pack(vec), PIPELINE_VERSION),
+            )
+        self._conn.commit()
+
+    def get_chunks(self, song_id: int) -> list:
+        """Return list of chunk fingerprint vectors for one song, or []."""
+        rows = self._conn.execute(
+            "SELECT vector FROM chunks WHERE song_id = ? AND version = ? ORDER BY chunk_idx",
+            (song_id, PIPELINE_VERSION),
+        ).fetchall()
+        return [_unpack(r["vector"]) for r in rows]
+
+    def get_chunks_bulk(self, song_ids: list[int]) -> dict:
+        """Return {song_id: [vectors]} for a batch of songs."""
+        if not song_ids:
+            return {}
+        ph = ",".join("?" * len(song_ids))
+        rows = self._conn.execute(
+            f"SELECT song_id, chunk_idx, vector FROM chunks "
+            f"WHERE song_id IN ({ph}) AND version = ? ORDER BY song_id, chunk_idx",
+            [*song_ids, PIPELINE_VERSION],
+        ).fetchall()
+        result: dict[int, list] = {}
+        for r in rows:
+            result.setdefault(r["song_id"], []).append(_unpack(r["vector"]))
+        return result
+
+    def needs_chunks(self, song_id: int) -> bool:
+        """True if no current-version chunks exist for this song."""
+        count = self._conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE song_id = ? AND version = ?",
+            (song_id, PIPELINE_VERSION),
+        ).fetchone()[0]
+        return count == 0
 
     # ------------------------------------------------------------------
     # Clusters

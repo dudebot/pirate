@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..store import Store
-from ..similarity import find_similar
+from ..similarity import find_similar, rerank_with_chunks
 from ..config import DB_PATH
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -195,9 +195,15 @@ async def similar_songs(song_id: int, k: int = Query(default=12)):
         ).fetchall()
         exclude_ids = {r["id"] for r in same}
 
-    results = find_similar(
-        fp, state.library_vecs, state.library_ids, k=k, exclude_ids=exclude_ids
+    candidates = find_similar(
+        fp, state.library_vecs, state.library_ids,
+        k=max(k * 10, 100), exclude_ids=exclude_ids,
     )
+    query_chunks = state.store.get_chunks(song_id)
+    if query_chunks:
+        results = rerank_with_chunks(candidates, query_chunks, state.store, k=k)
+    else:
+        results = candidates[:k]
 
     def _enrich(pairs):
         out = []
