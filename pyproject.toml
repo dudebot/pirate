@@ -19,7 +19,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ui           = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart"]
 auto-cluster = ["hdbscan"]
+all          = ["pirate[ui,auto-cluster]"]
 
 [project.scripts]
 pirate = "pirate.cli:cli"

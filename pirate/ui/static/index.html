@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PIRATE</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <header id="header">
+    <span class="logo">&#x1F3F4; PIRATE</span>
+    <input id="search" type="text" placeholder="Search artist, title, album…" autocomplete="off" spellcheck="false">
+    <span id="stats"></span>
+  </header>
+
+  <div id="main">
+
+    <div id="library-pane">
+      <table id="library-table">
+        <thead>
+          <tr>
+            <th data-sort="artist" class="col-artist">Artist</th>
+            <th data-sort="title"  class="col-title">Title</th>
+            <th data-sort="album"  class="col-album">Album</th>
+            <th data-sort="duration_s" class="col-dur">Time</th>
+            <th data-sort="bpm"    class="col-bpm">BPM</th>
+            <th data-sort="cluster" class="col-clus">Cluster</th>
+          </tr>
+        </thead>
+        <tbody id="library-body">
+          <tr><td colspan="6" class="loading">Loading library…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div id="detail-pane" class="hidden">
+      <div id="detail-header">
+        <div id="detail-artist"></div>
+        <div id="detail-title"></div>
+        <div id="detail-meta"></div>
+      </div>
+      <div id="detail-actions">
+        <button id="play-now"  class="btn btn-primary">&#9654; Play now</button>
+        <button id="add-queue" class="btn btn-secondary">+ Queue</button>
+      </div>
+      <div id="similar-section">
+        <div class="section-label">Similar songs</div>
+        <div id="similar-list"><div class="loading">Select a song…</div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="player-bar">
+    <div id="player-track">
+      <div id="player-track-artist"></div>
+      <div id="player-track-title">Nothing playing</div>
+    </div>
+    <div id="player-controls">
+      <button class="ctrl-btn" id="btn-prev">&#9198;</button>
+      <button class="ctrl-btn" id="btn-play">&#9654;</button>
+      <button class="ctrl-btn" id="btn-next">&#9197;</button>
+    </div>
+    <div id="player-progress-wrap">
+      <span id="player-time">0:00</span>
+      <input id="player-progress" type="range" min="0" max="100" value="0" step="0.1">
+      <span id="player-duration">0:00</span>
+    </div>
+    <div id="player-volume-wrap">
+      <span>&#128266;</span>
+      <input id="player-volume" type="range" min="0" max="1" value="0.8" step="0.01">
+    </div>
+  </div>
+
+  <audio id="audio" preload="auto"></audio>
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>

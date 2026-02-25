@@ -454,5 +454,35 @@ def stats(db: Path | None):
         click.echo(f"Database:      {db_path}")
 
 
+@cli.command()
+@click.option("--port", default=6272, show_default=True, help="Port to listen on.")
+@click.option("--no-open", is_flag=True, help="Don't open browser automatically.")
+@click.option("--db", type=click.Path(path_type=Path), default=None)
+def ui(port: int, no_open: bool, db: Path | None):
+    """Start the web UI at http://localhost:PORT."""
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo("uvicorn not installed. Run: pip install 'pirate[ui]'", err=True)
+        sys.exit(1)
+
+    db_path = db or DB_PATH
+    os.environ["PIRATE_DB_PATH"] = str(db_path)
+
+    if not no_open:
+        import threading
+        import webbrowser
+        import time
+
+        def _open():
+            time.sleep(1.2)
+            webbrowser.open(f"http://localhost:{port}")
+
+        threading.Thread(target=_open, daemon=True).start()
+
+    click.echo(f"PIRATE UI → http://localhost:{port}  (Ctrl+C to stop)")
+    uvicorn.run("pirate.ui.server:app", host="127.0.0.1", port=port, reload=False, log_level="warning")
+
+
 if __name__ == "__main__":
     cli()
